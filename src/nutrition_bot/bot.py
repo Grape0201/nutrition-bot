@@ -1,25 +1,143 @@
 import discord
+from discord import app_commands
+from discord.ext import commands
 from .config import DISCORD_BOT_TOKEN, JST
 from .utils import get_exif_datetime
 from .services import analyze_with_gemini, send_to_gas
 
-# Discord Botの初期化
-intents = discord.Intents.default()
-intents.message_content = True
-client = discord.Client(intents=intents)
 
-@client.event
-async def on_ready():
-    print(f"Logged in as {client.user}")
+class NutritionBot(commands.Bot):
+    def __init__(self):
+        intents = discord.Intents.default()
+        intents.message_content = True
+        # プレフィックスコマンドは使用しないが、Botクラスを継承するために必要
+        super().__init__(command_prefix="!", intents=intents)
 
-@client.event
+    async def setup_hook(self):
+        # スラッシュコマンドをグローバルに同期
+        await self.tree.sync()
+        print("Synced slash commands.")
+
+    async def on_ready(self):
+        print(f"Logged in as {self.user}")
+
+    async def process_meal_data(self, target, image_bytes, content, eaten_at_dt):
+        """
+        共通の食事解析・保存ロジック
+        target: discord.abc.Messageable (チャンネル) または discord.Interaction
+        """
+        eaten_at_str = eaten_at_dt.isoformat()
+
+        # 応答用のメッセージを準備
+        if isinstance(target, discord.Interaction):
+            if not target.response.is_done():
+                await target.response.send_message("🔄 AIで食事を解析中...")
+            status_msg = await target.original_response()
+        else:
+            status_msg = await target.send("🔄 AIで食事を解析中...")
+
+        # Geminiで解析
+        result_json = await analyze_with_gemini(image_bytes, content, eaten_at_str)
+
+        if result_json and "meals" in result_json:
+            # GAS (Google Apps Script) に送信
+            success = await send_to_gas(result_json)
+
+            if success:
+                meals = result_json["meals"]
+                formatted_reply = f"✅ **記録完了** ({len(meals)}品目)\n\n"
+
+                for meal in meals:
+                    formatted_reply += (
+                        f"🍽 **{meal.get('menu')}**\n"
+                        f"  🔥 {meal.get('calories')} kcal  |  💪 P: {meal.get('protein')}g  |  🥑 F: {meal.get('fat')}g  |  🍚 C: {meal.get('carb')}g\n"
+                    )
+                    if meal.get("source_url"):
+                        formatted_reply += f"  🔗 [参考元]({meal.get('source_url')})\n"
+                    formatted_reply += "\n"
+
+                await status_msg.edit(content=formatted_reply.strip())
+            else:
+                await status_msg.edit(
+                    content="❌ 解析は成功しましたが、スプレッドシートへの保存に失敗しました。"
+                )
+        else:
+            await status_msg.edit(
+                content="❌ AI解析に失敗しました。画像やテキストが食事と認識できなかった可能性があります。"
+            )
+
+
+bot = NutritionBot()
+
+
+@bot.event
 async def on_message(message):
-    if message.author == client.user:
+    # Bot自身のメッセージは無視
+    if message.author == bot.user:
         return
 
+    # 添付ファイルもテキストもない場合は無視
     if not message.attachments and not message.content.strip():
         return
 
+    image_bytes = None
+    eaten_at_dt = None
+
+    # 画像の取得
+    if message.attachments:
+        attachment = message.attachments[0]
+        if attachment.content_type and attachment.content_type.startswith("image/"):
+            image_bytes = await attachment.read()
+            eaten_at_dt = get_exif_datetime(image_bytes)
+
+    # 日時の特定
+    if eaten_at_dt is None:
+        eaten_at_dt = message.created_at.astimezone(JST)
+
+    await bot.process_meal_data(
+        message.channel, image_bytes, message.content, eaten_at_dt
+    )
+
+
+@bot.tree.command(name="record", description="食事を記録します（画像またはテキスト）")
+@app_commands.describe(image="食事の画像", memo="食事の内容（テキスト）")
+@app_commands.allowed_installs(guilds=True, users=True)
+@app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
+async def record(
+    interaction: discord.Interaction,
+    image: discord.Attachment | None = None,
+    memo: str | None = None,
+):
+    # 入力チェック
+    if not image and (not memo or not memo.strip()):
+        await interaction.response.send_message(
+            "画像またはテキストのどちらかを入力してください。", ephemeral=True
+        )
+        return
+
+    image_bytes = None
+    eaten_at_dt = None
+
+    if image:
+        if image.content_type and image.content_type.startswith("image/"):
+            image_bytes = await image.read()
+            eaten_at_dt = get_exif_datetime(image_bytes)
+        else:
+            await interaction.response.send_message(
+                "画像ファイルを指定してください。", ephemeral=True
+            )
+            return
+
+    if eaten_at_dt is None:
+        eaten_at_dt = interaction.created_at.astimezone(JST)
+
+    await bot.process_meal_data(interaction, image_bytes, memo or "", eaten_at_dt)
+
+
+@bot.tree.context_menu(name="食事を記録")
+@app_commands.allowed_installs(guilds=True, users=True)
+@app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
+async def record_context(interaction: discord.Interaction, message: discord.Message):
     image_bytes = None
     eaten_at_dt = None
 
@@ -29,42 +147,20 @@ async def on_message(message):
             image_bytes = await attachment.read()
             eaten_at_dt = get_exif_datetime(image_bytes)
 
+    if not image_bytes and not message.content.strip():
+        await interaction.response.send_message(
+            "メッセージに画像またはテキストが含まれていません。", ephemeral=True
+        )
+        return
+
     if eaten_at_dt is None:
         eaten_at_dt = message.created_at.astimezone(JST)
 
-    eaten_at_str = eaten_at_dt.isoformat()
-    status_msg = await message.channel.send("🔄 AIで食事を解析中...")
+    await bot.process_meal_data(interaction, image_bytes, message.content, eaten_at_dt)
 
-    result_json = await analyze_with_gemini(image_bytes, message.content, eaten_at_str)
-
-    if result_json and "meals" in result_json:
-        success = await send_to_gas(result_json)
-
-        if success:
-            meals = result_json["meals"]
-            formatted_reply = f"✅ **記録完了** ({len(meals)}品目)\n\n"
-            
-            for meal in meals:
-                formatted_reply += (
-                    f"🍽 **{meal.get('menu')}**\n"
-                    f"  🔥 {meal.get('calories')} kcal  |  💪 P: {meal.get('protein')}g  |  🥑 F: {meal.get('fat')}g  |  🍚 C: {meal.get('carb')}g\n"
-                )
-                if meal.get("source_url"):
-                    formatted_reply += f"  🔗 [参考元]({meal.get('source_url')})\n"
-                formatted_reply += "\n"
-
-            await status_msg.edit(content=formatted_reply.strip())
-        else:
-            await status_msg.edit(
-                content="❌ 解析は成功しましたが、スプレッドシートへの保存に失敗しました。"
-            )
-    else:
-        await status_msg.edit(
-            content="❌ AI解析に失敗しました。画像やテキストが食事と認識できなかった可能性があります。"
-        )
 
 def run_bot():
     if not DISCORD_BOT_TOKEN:
         print("Error: DISCORD_BOT_TOKEN is not set.")
     else:
-        client.run(DISCORD_BOT_TOKEN)
+        bot.run(DISCORD_BOT_TOKEN)
