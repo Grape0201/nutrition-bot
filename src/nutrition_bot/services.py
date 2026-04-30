@@ -1,11 +1,10 @@
-import json
 import aiohttp
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 from .config import GEMINI_API_KEY, GAS_WEBHOOK_URL
-from .models import MealAnalysisResult
 
 # Gemini APIの設定
-genai.configure(api_key=GEMINI_API_KEY)
+client = genai.Client(api_key=GEMINI_API_KEY)
 
 
 async def send_to_gas(data: dict) -> bool:
@@ -43,7 +42,22 @@ async def analyze_with_gemini(
 
 1. Vision解析: 画像やテキストから各料理名と推定分量を特定する。
 2. Grounding照合: Google検索を使用して、特定された料理の正確な栄養素情報を検索・照合する。
-3. 構造化出力: 解析結果をJSON形式で出力してください。
+3. 構造化出力: 解析結果を必ず以下の**単一のJSONオブジェクト**形式で出力してください。リスト形式(`[...]`)で囲わず、`{{ "meals": [...] }}` の形式にしてください。他のテキストは一切含めないでください。フィールド名は必ずこの通りにしてください。
+
+JSON Structure:
+{{
+  "meals": [
+    {{
+      "eaten_at": "{eaten_at}",
+      "menu": "料理名",
+      "calories": 整数(kcal),
+      "protein": 小数(g),
+      "fat": 小数(g),
+      "carb": 小数(g),
+      "source_url": "参照したURL(あれば)"
+    }}
+  ]
+}}
 
 共通の時刻設定:
 eaten_at = "{eaten_at}"
@@ -52,30 +66,40 @@ eaten_at = "{eaten_at}"
 """
 
     try:
-        model = genai.GenerativeModel(
-            model_name="gemini-2.5-flash-lite",
-            tools=[{"google_search_retrieval": {}}],
-        )
-
-        contents: list[str | dict] = [prompt]
+        contents: list[str | types.Part] = [prompt]
         if image_data:
             contents.append(
-                {
-                    "mime_type": "image/jpeg",
-                    "data": image_data,
-                }
+                types.Part.from_bytes(
+                    data=image_data,
+                    mime_type="image/jpeg",
+                )
             )
 
-        response = model.generate_content(
-            contents,
-            generation_config=genai.GenerationConfig(
-                response_mime_type="application/json",
-                response_schema=MealAnalysisResult,
+        response = client.models.generate_content(
+            model="gemini-2.5-flash-lite",
+            contents=contents,  # type: ignore
+            config=types.GenerateContentConfig(
+                tools=[types.Tool(google_search=types.GoogleSearch())],
             ),
         )
 
-        result_json = json.loads(response.text.strip())
-        return result_json
+        if response.text:
+            # テキストからJSON部分を抽出してパース
+            text = response.text.strip()
+            if "```json" in text:
+                text = text.split("```json")[1].split("```")[0].strip()
+            elif "```" in text:
+                text = text.split("```")[1].split("```")[0].strip()
+
+            import json
+
+            try:
+                return json.loads(text)
+            except Exception as json_err:
+                print(f"JSON Parsing Error: {json_err}\nRaw text: {text}")
+                return None
+
+        return None
 
     except Exception as e:
         print(f"Gemini API Error: {e}")
