@@ -70,39 +70,15 @@ class NutritionBot(commands.Bot):
 bot = NutritionBot()
 
 
-@bot.event
-async def on_message(message):
-    # Bot自身のメッセージは無視
-    if message.author == bot.user:
-        return
-
-    # 添付ファイルもテキストもない場合は無視
-    if not message.attachments and not message.content.strip():
-        return
-
-    image_bytes = None
-    eaten_at_dt = None
-
-    # 画像の取得
-    if message.attachments:
-        attachment = message.attachments[0]
-        if attachment.content_type and attachment.content_type.startswith("image/"):
-            image_bytes = await attachment.read()
-            eaten_at_dt = get_exif_datetime(image_bytes)
-
-    # 日時の特定
-    if eaten_at_dt is None:
-        eaten_at_dt = message.created_at.astimezone(JST)
-
-    await bot.process_meal_data(
-        message.channel, image_bytes, message.content, eaten_at_dt
-    )
+async def is_owner(interaction: discord.Interaction) -> bool:
+    return await bot.is_owner(interaction.user)
 
 
-@bot.tree.command(name="record", description="食事を記録します（画像またはテキスト）")
+@bot.tree.command(name="record", description="食事を記録します（DM限定・オーナー専用）")
 @app_commands.describe(image="食事の画像", memo="食事の内容（テキスト）")
-@app_commands.allowed_installs(guilds=True, users=True)
-@app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
+@app_commands.allowed_installs(guilds=False, users=True)
+@app_commands.allowed_contexts(guilds=False, dms=True, private_channels=False)
+@app_commands.check(is_owner)
 async def record(
     interaction: discord.Interaction,
     image: discord.Attachment | None = None,
@@ -132,31 +108,6 @@ async def record(
         eaten_at_dt = interaction.created_at.astimezone(JST)
 
     await bot.process_meal_data(interaction, image_bytes, memo or "", eaten_at_dt)
-
-
-@bot.tree.context_menu(name="食事を記録")
-@app_commands.allowed_installs(guilds=True, users=True)
-@app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
-async def record_context(interaction: discord.Interaction, message: discord.Message):
-    image_bytes = None
-    eaten_at_dt = None
-
-    if message.attachments:
-        attachment = message.attachments[0]
-        if attachment.content_type and attachment.content_type.startswith("image/"):
-            image_bytes = await attachment.read()
-            eaten_at_dt = get_exif_datetime(image_bytes)
-
-    if not image_bytes and not message.content.strip():
-        await interaction.response.send_message(
-            "メッセージに画像またはテキストが含まれていません。", ephemeral=True
-        )
-        return
-
-    if eaten_at_dt is None:
-        eaten_at_dt = message.created_at.astimezone(JST)
-
-    await bot.process_meal_data(interaction, image_bytes, message.content, eaten_at_dt)
 
 
 def run_bot():
