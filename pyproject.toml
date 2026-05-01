@@ -17,7 +17,7 @@ dependencies = [
 ]
 
 [project.scripts]
-nutrition-bot = "nutrition_bot.main:run_bot"
+nutrition-bot = "nutrition_bot.main:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/nutrition_bot"]
