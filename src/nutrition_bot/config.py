@@ -9,5 +9,8 @@ DISCORD_BOT_TOKEN = os.environ["DISCORD_BOT_TOKEN"]
 GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 GAS_WEBHOOK_URL = os.environ["GAS_WEBHOOK_URL"]
 
+# データ保存ディレクトリ
+DATA_DIR = "data"
+
 # JSTタイムゾーンの設定
 JST = timezone(timedelta(hours=9), "Asia/Tokyo")

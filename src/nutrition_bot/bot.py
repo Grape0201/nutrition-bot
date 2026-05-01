@@ -2,7 +2,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 from .config import DISCORD_BOT_TOKEN, JST
-from .utils import get_exif_datetime
+from .utils import get_exif_datetime, save_meal_to_json, get_today_meals
 from .services import analyze_with_gemini, send_to_gas
 
 
@@ -40,6 +40,9 @@ class NutritionBot(commands.Bot):
         result_json = await analyze_with_gemini(image_bytes, content, eaten_at_str)
 
         if result_json and "meals" in result_json:
+            # ローカルJSONに保存
+            save_meal_to_json(result_json)
+
             # GAS (Google Apps Script) に送信
             success = await send_to_gas(result_json)
 
@@ -108,6 +111,37 @@ async def record(
         eaten_at_dt = interaction.created_at.astimezone(JST)
 
     await bot.process_meal_data(interaction, image_bytes, memo or "", eaten_at_dt)
+
+
+@bot.tree.command(name="today", description="今日の食事のサマリーを表示します（オーナー専用）")
+@app_commands.allowed_installs(guilds=False, users=True)
+@app_commands.allowed_contexts(guilds=False, dms=True, private_channels=False)
+@app_commands.check(is_owner)
+async def today(interaction: discord.Interaction):
+    await interaction.response.defer()
+
+    meals = get_today_meals()
+
+    if not meals:
+        await interaction.followup.send("📅 今日の記録はまだありません。")
+        return
+
+    total_cal = sum(m.get("calories", 0) for m in meals)
+    total_pro = sum(m.get("protein", 0) for m in meals)
+    total_fat = sum(m.get("fat", 0) for m in meals)
+    total_carb = sum(m.get("carb", 0) for m in meals)
+
+    summary = (
+        f"📅 **本日の集計** ({len(meals)}品目)\n"
+        f"━━━━━━━━━━━━━━━\n"
+        f"🔥 **合計カロリー**: {total_cal} kcal\n\n"
+        f"💪 **タンパク質 (P)**: {total_pro:.1f} g\n"
+        f"🥑 **脂質 (F)**: {total_fat:.1f} g\n"
+        f"🍚 **炭水化物 (C)**: {total_carb:.1f} g\n"
+        f"━━━━━━━━━━━━━━━"
+    )
+
+    await interaction.followup.send(summary)
 
 
 def run_bot():
