@@ -7,16 +7,20 @@ from .services import analyze_with_gemini, send_to_gas
 
 
 class NutritionBot(commands.Bot):
-    def __init__(self):
+    def __init__(self, sync_commands: bool = False):
         intents = discord.Intents.default()
         intents.message_content = True
         # プレフィックスコマンドは使用しないが、Botクラスを継承するために必要
         super().__init__(command_prefix="!", intents=intents)
+        self.sync_commands = sync_commands
 
     async def setup_hook(self):
-        # スラッシュコマンドをグローバルに同期
-        await self.tree.sync()
-        print("Synced slash commands.")
+        # コマンドライン引数で指定された場合のみ同期
+        if self.sync_commands:
+            await self.tree.sync()
+            print("Synced slash commands.")
+        else:
+            print("Skipped syncing slash commands (use --sync to sync).")
 
     async def on_ready(self):
         print(f"Logged in as {self.user}")
@@ -144,8 +148,9 @@ async def today(interaction: discord.Interaction):
     await interaction.followup.send(summary)
 
 
-def run_bot():
+def run_bot(sync_commands: bool = False):
     if not DISCORD_BOT_TOKEN:
         print("Error: DISCORD_BOT_TOKEN is not set.")
     else:
+        bot.sync_commands = sync_commands
         bot.run(DISCORD_BOT_TOKEN)
